@@ -81,7 +81,7 @@ const uint32_t LOG_INTERVAL_USEC = 2000;
 // Set USE_SHARED_SPI non-zero for use of an SPI sensor.
 // May not work for some cards.
 #ifndef USE_SHARED_SPI
-#define USE_SHARED_SPI 0
+#define USE_SHARED_SPI 1
 #endif  // USE_SHARED_SPI
 //------------------------------------------------------------------------------
 // Pin definitions.
@@ -289,7 +289,7 @@ void logData() {
 //------------------------------------------------------------------------------
 
 void recordToFile() {
-  //digitalWrite(A5, HIGH);
+  digitalWrite(A5, HIGH);
   const uint8_t QUEUE_DIM = BUFFER_BLOCK_COUNT + 1;
   // Index of last queue location.
   const uint8_t QUEUE_LAST = QUEUE_DIM - 1;
