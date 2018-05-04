@@ -31,7 +31,8 @@ MinimumSerial MinSerial;
 
 
 //LCD is connected on pin A5
-LiquidCrystal lcd(A5);  // 
+const int lcdSelector = A5;
+LiquidCrystal lcd(lcdSelector);  // 
 
 // UI control button pins
 const int backButton = A1;
@@ -41,14 +42,6 @@ const int okButton = A3;
 // LPT trigger pins
 const int triggers[] = {2, 3, 4, 5, 6, 7, 8, 9};
 const int nOfTriggers = 8;
-const int trig1 = 2;
-const int trig2 = 3;
-const int trig3 = 4;
-const int trig4 = 5;
-const int trig5 = 6;
-const int trig6 = 7;
-const int trig7 = 8;
-const int trig8 = 9;
 
 // SPI selectors for SD card and digital pot
 const int sdSelector = 10;
@@ -68,8 +61,6 @@ int mainScreen = 0;
 String mainScreenTexts[6] = {"READY", "Test grips", "Test triggers", "Change sensitivities", "Start recording", "log to csv"};
 int pot1Value = 100;
 int pot2Value = 100;
-
-
 
 
 // Abort run on an overrun.  Data before the overrun will be saved.
@@ -189,8 +180,8 @@ void binaryToCsv() {
   char csvName[FILE_NAME_DIM];
 
   if (!binFile.isOpen()) {
-    screenPrint("No current", "binary file");
-    delay(1000);
+    //screenPrint("No current", "binary file");
+    //delay(1000);
     return;
   }
   
@@ -199,13 +190,14 @@ void binaryToCsv() {
   strcpy(&csvName[BASE_NAME_SIZE + 3], "csv");
 
   if (!csvFile.open(csvName, O_WRITE | O_CREAT | O_TRUNC)) {
-    error("open csvFile failed");
+    //screenPrint("open csvFile", "failed");
+    //delay(1000);
   }
   binFile.rewind();
-  screenPrint("Writing: " + String(csvName), "Button to abort");
+  //screenPrint("Writing: " + String(csvName), "Button to abort");
   printHeader(&csvFile);
   uint32_t tPct = millis();
-  while (!moveOn() && binFile.read(&block, 512) == 512) {
+  while (!stopButtons() && binFile.read(&block, 512) == 512) {
     uint16_t i;
     if (block.count == 0 || block.count > DATA_DIM) {
       break;
@@ -228,12 +220,12 @@ void binaryToCsv() {
         lastPct = pct;
       }
     }
-    if (moveOn()) {
+    if (stopButtons()) {
       break;
     }
   }
   csvFile.close();
-  screenPrint("Done!", String(0.001*(millis() - t0)) + " Seconds");
+  //screenPrint("Done!", String(0.001*(millis() - t0)) + " Seconds");
 }
 //-----------------------------------------------------------------------------
 void createBinFile() {
@@ -336,7 +328,7 @@ void recordToFile() {
   while(1) {
      // Time for next data record.
     logTime += LOG_INTERVAL_USEC;
-    if (moveOn()) {
+    if (stopButtons()) {
       //screenPrint("WILL CLOSE", "");
       closeFile = true;
     }  
@@ -455,22 +447,14 @@ void renameBinFile() {
 void setup() {
   lcd.begin(16, 2);
   screenPrint("BOOTING UP", "");
+  delay(500);
   pinMode(backButton, INPUT);
   pinMode(nextButton, INPUT);
   pinMode(okButton, INPUT);
   for (int i=0; i < nOfTriggers; i++) {
     pinMode(triggers[i], INPUT);
   }
-  /*
-  pinMode(trig1, INPUT);
-  pinMode(trig2, INPUT);
-  pinMode(trig3, INPUT);
-  pinMode(trig4, INPUT);
-  pinMode(trig5, INPUT);
-  pinMode(trig6, INPUT);
-  pinMode(trig7, INPUT);
-  pinMode(trig8, INPUT);
-  */
+  pinMode(lcdSelector, OUTPUT);
   pinMode(sdSelector, OUTPUT);
   pinMode(potSelector, OUTPUT);
   // set selectors high to de-select them
@@ -485,6 +469,7 @@ void setup() {
     pinMode(ERROR_LED_PIN, OUTPUT);
   }
   if (!sd.begin(SD_CS_PIN, SD_SCK_MHZ(50))) {
+    screenPrint("NO DICE", "");
     sd.initErrorPrint(&Serial);
     fatalBlink();
   }
@@ -514,8 +499,15 @@ void loop() {
       startRecording();
       break;
     case 5:
-      screenPrint("log to csv", "");
-      // separate menu to transform a log to csv file, at least file selection
+      screenPrint("Converting to", "CSV");
+      delay(3000);
+      lcd.noDisplay();
+      digitalWrite(A5, HIGH);
+      binaryToCsv();
+      delay(100);
+      lcd.begin(16,2);
+      screenPrint("DONE AND DONE", "");
+      delay(500);
       break;
     default:
       mainScreen = 0;
@@ -568,7 +560,6 @@ int navigateValues(int navValue, int minValue, int maxValue, int wait) {
 void testSensors() {
   while (true) {
     screenPrint("Grip1      Grip2", String(analogRead(grip1)) + "        " + String(analogRead(grip2)));
-    if (moveOn) return;
     if (moveOn) return;
   }
 }
@@ -630,6 +621,10 @@ int getTrigger() {
     triggerValue += (digitalRead(triggers[j]) * pow(2,j));
   }
   return triggerValue;
+}
+
+boolean stopButtons() {
+  return (digitalRead(backButton) == 1 && digitalRead(nextButton) == 1);
 }
 
 boolean moveOn() {
