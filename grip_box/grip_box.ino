@@ -20,11 +20,6 @@
 #include "FreeStack.h"
 #include "UserTypes.h"
 
-#ifdef __AVR_ATmega328P__
-#include "MinimumSerial.h"
-MinimumSerial MinSerial;
-#define Serial MinSerial
-#endif  // __AVR_ATmega328P__
 //==============================================================================
 // Start of configuration constants.
 //==============================================================================
@@ -57,11 +52,16 @@ const int grip2 = A7;
 
 // additionally SPI communication uses pins 11, 12 and 13
 
+//const int errorLedPin = A4;
+const int maxErrors = 20;
+
+int curErrorIndex = 0;
+String errors[maxErrors];
+
 int mainScreen = 0;
-String mainScreenTexts[6] = {"READY", "Test grips", "Test triggers", "Change sensitivities", "Start recording", "log to csv"};
+String mainScreenTexts[7] = {"READY", "Test grips", "Test triggers", "Change sens", "Start recording", "Log to csv", "View errors"};
 int pot1Value = 100;
 int pot2Value = 100;
-
 
 // Abort run on an overrun.  Data before the overrun will be saved.
 #define ABORT_ON_OVERRUN 1
@@ -80,14 +80,7 @@ const uint32_t LOG_INTERVAL_USEC = 2000;
 // SD chip select pin.
 const uint8_t SD_CS_PIN = sdSelector;
 //
-// Digital pin to indicate an error, set to -1 if not used.
-// The led blinks for fatal errors. The led goes on solid for
-// overrun errors and logging continues unless ABORT_ON_OVERRUN
-// is non-zero.
-#ifdef ERROR_LED_PIN
-#undef ERROR_LED_PIN
-#endif  // ERROR_LED_PIN
-const int8_t ERROR_LED_PIN = -1;
+
 //------------------------------------------------------------------------------
 // File definitions.
 //
@@ -112,7 +105,7 @@ const uint32_t FILE_BLOCK_COUNT = 256000;
 const uint8_t BUFFER_BLOCK_COUNT = 10;
 //
 #elif RAMEND < 0X8FF
-#error Too little SRAM
+//#error Too little SRAM
 //
 #elif RAMEND < 0X10FF
 // Use total of two 512 byte buffers.
@@ -153,23 +146,9 @@ struct block_t {
   data_t data[DATA_DIM];
   uint8_t fill[FILL_DIM];
 };
-//==============================================================================
-// Error messages stored in flash.
-#define error(msg) {sd.errorPrint(&Serial, F(msg));fatalBlink();}
+
 //------------------------------------------------------------------------------
-//
-void fatalBlink() {
-  while (true) {
-    SysCall::yield();
-    if (ERROR_LED_PIN >= 0) {
-      digitalWrite(ERROR_LED_PIN, HIGH);
-      delay(200);
-      digitalWrite(ERROR_LED_PIN, LOW);
-      delay(200);
-    }
-  }
-}
-//-----------------------------------------------------------------------------
+
 // Convert binary file to csv file.
 void binaryToCsv() {
   uint8_t lastPct = 0;
@@ -180,7 +159,7 @@ void binaryToCsv() {
   char csvName[FILE_NAME_DIM];
 
   if (!binFile.isOpen()) {
-    //screenPrint("No current", "binary file");
+    //error("No current binary file");
     //delay(1000);
     return;
   }
@@ -190,11 +169,9 @@ void binaryToCsv() {
   strcpy(&csvName[BASE_NAME_SIZE + 3], "csv");
 
   if (!csvFile.open(csvName, O_WRITE | O_CREAT | O_TRUNC)) {
-    //screenPrint("open csvFile", "failed");
-    //delay(1000);
+    //error("opening csvFile failed");
   }
   binFile.rewind();
-  //screenPrint("Writing: " + String(csvName), "Button to abort");
   printHeader(&csvFile);
   uint32_t tPct = millis();
   while (!stopButtons() && binFile.read(&block, 512) == 512) {
@@ -236,21 +213,17 @@ void createBinFile() {
   // Delete old tmp file.
   if (sd.exists(TMP_FILE_NAME)) {
     if (!sd.remove(TMP_FILE_NAME)) {
-      //screenPrint("Can't remove tmp file", "");
-      //delay(2000);
+      //error("Can't remove tmp file");
     }
   }
   // Create new file.
   binFile.close();
   if (!binFile.createContiguous(TMP_FILE_NAME, 512 * FILE_BLOCK_COUNT)) {
-    //screenPrint("createContiguous failed", "");
-    //delay(2000);
+    //error("createContiguous failed");
   }
-  screenPrint("created Contiguous", "");
   // Get the address of the file on the SD.
   if (!binFile.contiguousRange(&bgnBlock, &endBlock)) {
-    //screenPrint("contiguousRange failed", "");
-    //delay(2000);
+    //error("contiguousRange failed");
   }
   // Flash erase all data in the file.
   uint32_t bgnErase = bgnBlock;
@@ -261,8 +234,7 @@ void createBinFile() {
       endErase = endBlock;
     }
     if (!sd.card()->erase(bgnErase, endErase)) {
-      //screenPrint("erase failed", "");
-      //delay(2000);
+      //error("erase failed");
     }
     bgnErase = endErase + 1;
   }
@@ -302,23 +274,21 @@ void recordToFile() {
   // Use SdFat's internal buffer.
   emptyStack[0] = (block_t*)sd.vol()->cacheClear();
   if (emptyStack[0] == 0) {
-    //screenPrint("cacheClear failed", "");
-    //delay(4000);
+    //error("cacheClear failed");
   }
 
   // Put rest of buffers on the empty stack.
   for (int i = 1; i < BUFFER_BLOCK_COUNT; i++) {
-    emptyStack[i] = &block[i - 1];
+    //emptyStack[i] = &block[i - 1];
   }
   emptyTop = BUFFER_BLOCK_COUNT;
   minTop = BUFFER_BLOCK_COUNT;
   
   // Start a multiple block write.
   if (!sd.card()->writeStart(binFile.firstBlock())) {
-    //screenPrint("writeStart failed", "");
-    //delay(4000);
+    //error("writeStart failed");
   }
-  //screenPrint("RECORDING..", "BUTTON STOPS");
+  
   bool closeFile = false;
   uint32_t bn = 0;  
   uint32_t maxLatency = 0;
@@ -329,7 +299,6 @@ void recordToFile() {
      // Time for next data record.
     logTime += LOG_INTERVAL_USEC;
     if (stopButtons()) {
-      //screenPrint("WILL CLOSE", "");
       closeFile = true;
     }  
     if (closeFile) {
@@ -350,8 +319,7 @@ void recordToFile() {
         overrun = 0;
       }
       if ((int32_t)(logTime - micros()) < 0) {
-        //screenPrint("Rate too fast", "");
-        //delay(4000);
+        error("Rate too fast");
       }
       int32_t delta;
       do {
@@ -359,13 +327,9 @@ void recordToFile() {
       } while (delta < 0);
       if (currentBlock == 0) {
         overrun++;
-        overrunTotal++;
-        if (ERROR_LED_PIN >= 0) {
-          digitalWrite(ERROR_LED_PIN, HIGH);
-        }        
+        overrunTotal++;     
 #if ABORT_ON_OVERRUN
-        //screenPrint("OVERRUN ABORT", "");
-        //delay(4000);
+        //error("OVERRUN ABORT");
         break;
  #endif  // ABORT_ON_OVERRUN       
       } else {
@@ -395,8 +359,7 @@ void recordToFile() {
       // Write block to SD.
       uint32_t usec = micros();
       if (!sd.card()->writeData((uint8_t*)pBlock)) {
-        //screenPrint("write data failed", "");
-        //delay(4000);
+        //error("write data failed");
       }
       usec = micros() - usec;
       if (usec > maxLatency) {
@@ -412,14 +375,12 @@ void recordToFile() {
     }
   }
   if (!sd.card()->writeStop()) {
-    //screenPrint("writeStop failed", "");
-    //delay(4000);
+    //error("writeStop failed");
   }
   // Truncate file if recording stopped early.
   if (bn != FILE_BLOCK_COUNT) {
     if (!binFile.truncate(512L * bn)) {
-      //screenPrint("Can't truncate file", "");
-      //delay(4000);
+      //error("Can't truncate file");
     }
   }
 }
@@ -465,19 +426,14 @@ void setup() {
   pinMode(grip2, INPUT);
   // start spi connection
 
-  if (ERROR_LED_PIN >= 0) {
-    pinMode(ERROR_LED_PIN, OUTPUT);
-  }
   if (!sd.begin(SD_CS_PIN, SD_SCK_MHZ(50))) {
-    screenPrint("NO DICE", "");
-    sd.initErrorPrint(&Serial);
-    fatalBlink();
+    screenPrint("Cannot start SD", "");
   }
 }
 
 void loop() {
   screenPrint(mainScreenTexts[mainScreen], "");
-  mainScreen = navigateValues(mainScreen, 0, 5, 200);
+  mainScreen = navigateValues(mainScreen, 0, 6, 200);
   if (digitalRead(okButton) == 1) {
     delay(50);
     if (digitalRead(okButton) == 1) {
@@ -508,6 +464,9 @@ void loop() {
       lcd.begin(16,2);
       screenPrint("DONE AND DONE", "");
       delay(500);
+      break;
+    case 6:
+      viewErrors();
       break;
     default:
       mainScreen = 0;
@@ -577,7 +536,7 @@ void changeSensitivity() {
 }
 
 void startRecording() {
-  screenPrint("STARTING RECORD", "SCREEN TURNS OFF");
+  screenPrint("Starting rec", "screen turns off");
   delay(4000);
   lcd.noDisplay();
   digitalWrite(A5, HIGH);
@@ -585,6 +544,21 @@ void startRecording() {
   lcd.begin(16,2);
   screenPrint("REC DONE", "press Button");
   while(!moveOn()) {}
+}
+
+void viewErrors() {
+  int error = 0;
+  if (curErrorIndex == 0) {
+    screenPrint("No errors", ":)");
+    delay(500);
+    return; 
+  }
+  while (true) {
+    screenPrint(String("Error" + error), errors[error]);
+    error = navigateValues(error, 0, curErrorIndex - 1, 100);
+    if (moveOn()) return;
+  }
+  
 }
 
 int adjustPot(int potValue, int potAddress, int potNum, int grip) {
@@ -637,4 +611,13 @@ boolean moveOn() {
   return false;
 }
 
+void error(String msg) {
+  if (curErrorIndex <= maxErrors) {
+    errors[curErrorIndex] = msg;
+    curErrorIndex++;
+  }
+  if (curErrorIndex == 1) {
+    //digitalWrite(errorLedPin, HIGH);
+  }
+}
 
